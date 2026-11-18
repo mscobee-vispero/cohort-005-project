@@ -13,6 +13,12 @@ import { data } from "react-router";
 import { db } from "~/db";
 import { purchases, coupons, courses, enrollments } from "~/db/schema";
 import { eq, and } from "drizzle-orm";
+import { isRefundedPurchase } from "~/lib/refunds.server";
+
+// A team Purchase whose Refund has been Issued is a Refunded Purchase: its
+// unclaimed Team Seats no longer grant the course.
+const REFUNDED_SEAT_MESSAGE =
+  "This team Purchase has been refunded, so its Team Seats can no longer be claimed.";
 
 function getCourseById(id: number) {
   return db.select().from(courses).where(eq(courses.id, id)).get();
@@ -50,6 +56,10 @@ function redeemCoupon(
 
   if (coupon.redeemedByUserId !== null) {
     return { ok: false, error: "Coupon has already been redeemed" };
+  }
+
+  if (isRefundedPurchase(coupon.purchaseId)) {
+    return { ok: false, error: REFUNDED_SEAT_MESSAGE };
   }
 
   const existingEnrollment = db
@@ -132,6 +142,10 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const course = getCourseById(coupon.courseId);
   if (!course) {
     throw data("Course not found.", { status: 404 });
+  }
+
+  if (coupon.redeemedByUserId === null && isRefundedPurchase(coupon.purchaseId)) {
+    throw data(REFUNDED_SEAT_MESSAGE, { status: 410 });
   }
 
   const alreadyRedeemed = coupon.redeemedByUserId !== null;

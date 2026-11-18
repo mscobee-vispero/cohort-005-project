@@ -16,10 +16,8 @@ import {
   courseRatings,
   purchases,
   coupons,
-  refundRequests,
   videoWatchEvents,
   LessonProgressStatus,
-  RefundRequestStatus,
 } from "~/db/schema";
 import { eq, and, or, sql, inArray, isNotNull } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
@@ -52,6 +50,7 @@ import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice, getCountryTierInfo } from "~/lib/ppp";
 import { parseFormData } from "~/lib/validation";
 import { MAX_RATING, MIN_RATING } from "~/lib/ratings";
+import { getRefundRequestBlocker } from "~/lib/refunds.server";
 import { StarRating, StarRatingInput } from "~/components/star-rating";
 
 function getCourseBySlug(slug: string) {
@@ -376,19 +375,6 @@ function getPurchaseForCourse(userId: number, courseId: number) {
     .get();
 }
 
-function getOpenRefundRequest(purchaseId: number) {
-  return db
-    .select({ id: refundRequests.id })
-    .from(refundRequests)
-    .where(
-      and(
-        eq(refundRequests.purchaseId, purchaseId),
-        eq(refundRequests.status, RefundRequestStatus.Requested)
-      )
-    )
-    .get();
-}
-
 function getCompletedLessonCount(userId: number, lessonIds: number[]) {
   if (lessonIds.length === 0) return 0;
 
@@ -437,14 +423,14 @@ function asDayString(when: Date) {
 }
 
 /**
- * The Refund the student is offered on their Purchase, or null if they cannot
- * raise a Refund Request for it.
+ * What the Student would get back if a Refund Request on their Purchase were
+ * approved, or null if they cannot raise a Refund Request for it.
  */
 function getRefundOffer(userId: number, courseId: number) {
   const purchase = getPurchaseForCourse(userId, courseId);
 
   if (!purchase) return null;
-  if (getOpenRefundRequest(purchase.id)) return null;
+  if (getRefundRequestBlocker(purchase.id)) return null;
 
   const purchasedDay = asDayString(new Date(purchase.createdAt));
   const windowEnd = new Date(purchase.createdAt);
@@ -1012,8 +998,8 @@ function RequestRefund({ slug, amount }: { slug: string; amount: number }) {
     <div className="border-t pt-4">
       <p className="mb-2 text-sm font-medium">Request a refund</p>
       <p className="mb-3 text-xs text-muted-foreground">
-        We will send {formatPrice(amount)} back to the card you paid with, once
-        someone has read your note.
+        If we approve your Refund Request, we'll send {formatPrice(amount)} back
+        to the card you paid with.
       </p>
       <fetcher.Form
         method="post"

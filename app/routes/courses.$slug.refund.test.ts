@@ -76,10 +76,12 @@ describe("raising a Refund Request", () => {
 
     const requests = testDb.select().from(schema.refundRequests).all();
     expect(requests).toHaveLength(1);
-    expect(requests[0].status).toBe(schema.RefundRequestStatus.Requested);
+    expect(requests[0].status).toBe(schema.RefundRequestStatus.Open);
 
     const email = logged.join("\n");
-    expect(email).toContain(`Refund requested — ${course.title}`);
+    expect(email).toContain(
+      `We've received your Refund Request: ${course.title}`
+    );
     expect(email).not.toMatch(/reversal|chargeback/i);
   });
 });

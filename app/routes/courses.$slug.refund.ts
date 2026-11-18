@@ -17,6 +17,7 @@ import {
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { parseFormData, parseParams } from "~/lib/validation";
 import { formatPrice } from "~/lib/utils";
+import { getRefundRequestBlocker } from "~/lib/refunds.server";
 
 const REFUND_WINDOW_DAYS = 14;
 const MAX_WATCHED_HOURS = 2;
@@ -57,19 +58,6 @@ function getLessonIdsForCourse(courseId: number): number[] {
   return rows.map((row) => row.id);
 }
 
-function getOpenRefundRequest(purchaseId: number) {
-  return db
-    .select()
-    .from(refundRequests)
-    .where(
-      and(
-        eq(refundRequests.purchaseId, purchaseId),
-        eq(refundRequests.status, RefundRequestStatus.Requested)
-      )
-    )
-    .get();
-}
-
 // The Refund Window is counted in whole days, not hours — someone who
 // buys at 23:00 should still get the whole of their fourteenth day.
 function calendarDay(when: Date): string {
@@ -96,14 +84,14 @@ function buildRefundRequestEmail(input: {
 }) {
   return {
     to: input.studentEmail,
-    subject: `Refund requested — ${input.courseTitle}`,
+    subject: `We've received your Refund Request: ${input.courseTitle}`,
     body: [
       `Hi ${input.studentName},`,
       "",
       `We have your Refund Request for "${input.courseTitle}".`,
-      `The Refund is for ${formatPrice(input.amount)}, the amount you paid.`,
+      `Your Refund Request is for ${formatPrice(input.amount)}, the amount you paid.`,
       "",
-      "Our team reviews every Refund Request by hand. You do not need to do anything else — we will email you again when it is done.",
+      "Our team reviews every Refund Request by hand. You do not need to do anything else — we will email you again once we have decided.",
       "",
       "— The Cadence team",
     ].join("\n"),
@@ -114,7 +102,9 @@ export async function action({ params, request }: Route.ActionArgs) {
   const currentUserId = await getCurrentUserId(request);
 
   if (!currentUserId) {
-    throw data("You must be logged in to request a refund.", { status: 401 });
+    throw data("You must be logged in to raise a Refund Request.", {
+      status: 401,
+    });
   }
 
   const { slug } = parseParams(params, refundParamsSchema);
@@ -140,10 +130,10 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("You have not bought this course.", { status: 403 });
   }
 
-  if (getOpenRefundRequest(purchase.id)) {
-    throw data("You already have a request open on this purchase.", {
-      status: 409,
-    });
+  const blocker = getRefundRequestBlocker(purchase.id);
+
+  if (blocker) {
+    throw data(blocker, { status: 409 });
   }
 
   // Once any Team Seat on a Purchase has been claimed, the Purchase belongs to
@@ -196,9 +186,10 @@ export async function action({ params, request }: Route.ActionArgs) {
   }
 
   if (watchedSeconds >= MAX_WATCHED_HOURS * 60 * 60) {
-    throw data("You have watched too much of this course to get a refund.", {
-      status: 403,
-    });
+    throw data(
+      "You have watched too much of this course to raise a Refund Request.",
+      { status: 403 }
+    );
   }
 
   // A Refund is always the amount paid on the Purchase.
@@ -215,7 +206,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     .insert(refundRequests)
     .values({
       purchaseId: purchase.id,
-      status: RefundRequestStatus.Requested,
+      status: RefundRequestStatus.Open,
       reason: parsed.data.reason,
     })
     .returning()

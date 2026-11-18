@@ -23,3 +23,13 @@ is a lie the type checker believes.
 Both switch the type checker off at the exact point you are least sure. If a
 value can be missing, narrow it with a check. If you cannot name the type,
 the shape is wrong — fix the shape.
+
+## Take icons from `lucide-react` only
+
+It matches the shadcn/ui components we already use. A second icon library
+means two visual styles and two packages to keep up to date.
+
+## Let Prettier format everything, with the settings it has
+
+Do not change `.prettierrc` to suit your own taste. Arguments about quotes,
+semicolons and print width are not worth having.

@@ -16,10 +16,8 @@ import {
   courseRatings,
   purchases,
   coupons,
-  refunds,
   videoWatchEvents,
   LessonProgressStatus,
-  RefundStatus,
 } from "~/db/schema";
 import { eq, and, or, sql, inArray, isNotNull } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
@@ -55,6 +53,7 @@ import {
 } from "~/lib/ppp";
 import { parseFormData } from "~/lib/validation";
 import { MAX_RATING, MIN_RATING } from "~/lib/ratings";
+import { getRefundRequestBlocker } from "~/lib/refunds.server";
 import { StarRating, StarRatingInput } from "~/components/star-rating";
 
 function getCourseBySlug(slug: string) {
@@ -379,19 +378,6 @@ function getPurchaseForCourse(userId: number, courseId: number) {
     .get();
 }
 
-function getOpenRefundRequest(purchaseId: number) {
-  return db
-    .select({ id: refunds.id })
-    .from(refunds)
-    .where(
-      and(
-        eq(refunds.purchaseId, purchaseId),
-        eq(refunds.status, RefundStatus.Open)
-      )
-    )
-    .get();
-}
-
 function getCompletedLessonCount(userId: number, lessonIds: number[]) {
   if (lessonIds.length === 0) return 0;
 
@@ -447,7 +433,7 @@ function getRefundOffer(userId: number, course: { id: number }) {
   const purchase = getPurchaseForCourse(userId, course.id);
 
   if (!purchase) return null;
-  if (getOpenRefundRequest(purchase.id)) return null;
+  if (getRefundRequestBlocker(purchase.id)) return null;
 
   const purchasedDay = asDayString(new Date(purchase.createdAt));
   const windowEnd = new Date(purchase.createdAt);
@@ -1012,8 +998,8 @@ function RequestRefund({ slug, amount }: { slug: string; amount: number }) {
     <div className="border-t pt-4">
       <p className="mb-2 text-sm font-medium">Request a refund</p>
       <p className="mb-3 text-xs text-muted-foreground">
-        We will send {formatPrice(amount)} back to the card you paid with, once
-        someone has read your note.
+        If we approve your Refund Request, we'll send {formatPrice(amount)} back
+        to the card you paid with.
       </p>
       <fetcher.Form
         method="post"

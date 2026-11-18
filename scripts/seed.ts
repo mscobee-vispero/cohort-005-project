@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { eq, gte, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
@@ -10,10 +10,12 @@ import {
   UserRole,
   CourseStatus,
   LessonProgressStatus,
+  RefundRequestStatus,
   RefundStatus,
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { removeCourseAccess } from "../app/lib/refunds.server";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -78,6 +80,7 @@ async function seed() {
     DROP TABLE IF EXISTS team_members;
     DROP TABLE IF EXISTS teams;
     DROP TABLE IF EXISTS refunds;
+    DROP TABLE IF EXISTS refund_requests;
     DROP TABLE IF EXISTS purchases;
     DROP TABLE IF EXISTS enrollments;
     DROP TABLE IF EXISTS lessons;
@@ -1784,7 +1787,8 @@ This course is still in draft while the cluster examples are rewritten against t
   // ─── Enrollments ───
   // Varied enrollment patterns:
   // - Emma: enrolled in both courses (nearly complete in course 1, mid-way in course 2)
-  // - James: enrolled in course 1 only (completed)
+  // - James: enrolled in course 1 only (completed) — removed later, once his
+  //   Refund is Issued
   // - Olivia: enrolled in both courses (just started course 1, mid-way in course 2)
   // - Liam: enrolled in course 2 only (just started, abandoned)
   // - Sophia: enrolled in course 1 only (recently enrolled, barely started)
@@ -2772,16 +2776,132 @@ This course is still in draft while the cluster examples are rewritten against t
       updatedAt: daysAgo(6),
     })
     .run();
-  db.insert(schema.refunds)
+  db.insert(schema.refundRequests)
     .values({
       purchaseId: liamPurchase.id,
-      status: RefundStatus.Open,
+      status: RefundRequestStatus.Open,
       reason: "Bought the wrong one, I meant the advanced course.",
       requestedAt: daysAgo(4),
     })
     .run();
 
   console.log("Created Liam's Refund Request.");
+
+  // ─── Decided Refund Requests ───
+  // One learner per later state, on purchases seeded above, so the settings
+  // page shows every badge. Alex (the admin) made each decision. Only James's
+  // Refund is Issued, so only he loses the course (see below).
+
+  function purchaseOf(email: string, courseId: number) {
+    const purchase = db
+      .select()
+      .from(schema.purchases)
+      .where(
+        and(
+          eq(schema.purchases.userId, studentByEmail(email).id),
+          eq(schema.purchases.courseId, courseId)
+        )
+      )
+      .get();
+    if (!purchase) throw new Error(`No seeded purchase for ${email}`);
+    return purchase;
+  }
+
+  function seedDecidedRefundRequest(
+    purchase: typeof schema.purchases.$inferSelect,
+    reason: string,
+    requested: number,
+    decided: number,
+    outcome:
+      | { status: RefundRequestStatus.Declined }
+      | {
+          status: RefundRequestStatus.Approved;
+          refundStatus: RefundStatus;
+          refundResolved: number | null;
+        }
+  ) {
+    const [refundRequest] = db
+      .insert(schema.refundRequests)
+      .values({
+        purchaseId: purchase.id,
+        status: outcome.status,
+        reason,
+        requestedAt: daysAgo(requested),
+        resolvedAt: daysAgo(decided),
+        resolvedByUserId: admin.id,
+      })
+      .returning()
+      .all();
+
+    if (outcome.status === RefundRequestStatus.Approved) {
+      db.insert(schema.refunds)
+        .values({
+          refundRequestId: refundRequest.id,
+          amount: purchase.amountPaid,
+          status: outcome.refundStatus,
+          createdAt: daysAgo(decided),
+          resolvedAt:
+            outcome.refundResolved === null
+              ? null
+              : daysAgo(outcome.refundResolved),
+        })
+        .run();
+    }
+  }
+
+  // Emma — Declined.
+  seedDecidedRefundRequest(
+    purchaseOf("emma.wilson@student.dev", course2.id),
+    "I thought this covered GraphQL as well.",
+    36,
+    34,
+    { status: RefundRequestStatus.Declined }
+  );
+  // Sophia — Approved, with a Pending Refund.
+  seedDecidedRefundRequest(
+    purchaseOf("sophia.davis@student.dev", course1.id),
+    "My employer ended up buying me a team seat for this.",
+    5,
+    1,
+    {
+      status: RefundRequestStatus.Approved,
+      refundStatus: RefundStatus.Pending,
+      refundResolved: null,
+    }
+  );
+  // James — Approved, with an Issued Refund. That makes his course 1 purchase
+  // a Refunded Purchase, so he loses the course exactly as markRefundIssued
+  // would take it: his enrollment goes, his progress, watch history and quiz
+  // attempts stay.
+  const jamesPurchase = purchaseOf("james.park@student.dev", course1.id);
+  seedDecidedRefundRequest(
+    jamesPurchase,
+    "Too fast for me — I need something more introductory first.",
+    40,
+    38,
+    {
+      status: RefundRequestStatus.Approved,
+      refundStatus: RefundStatus.Issued,
+      refundResolved: 36,
+    }
+  );
+  removeCourseAccess(db, jamesPurchase);
+  // Olivia — Approved, with a Failed Refund.
+  seedDecidedRefundRequest(
+    purchaseOf("olivia.martinez@student.dev", course1.id),
+    "Bought it twice by accident on two different cards.",
+    30,
+    28,
+    {
+      status: RefundRequestStatus.Approved,
+      refundStatus: RefundStatus.Failed,
+      refundResolved: 27,
+    }
+  );
+
+  console.log(
+    `Created ${countRows(schema.refundRequests)} Refund Requests and ${countRows(schema.refunds)} Refunds.`
+  );
 
   // ─── Flush watch events ───
   // Batched: the heartbeat makes these by far the largest table, and one
